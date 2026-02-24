@@ -13,59 +13,59 @@ uploaded_file = st.sidebar.file_uploader("📂 Sleep hier het jaarbestand (CSV)"
 
 if uploaded_file:
     try:
-        # We proberen het bestand in te laden. 
-        # sep=None met engine='python' zorgt dat hij zelf zoekt naar , of ;
+        # We laden het bestand in en negeren foutieve rijen
         df = pd.read_csv(uploaded_file, sep=None, engine='python', on_bad_lines='skip')
         
-        # Controleer of de cruciale kolom 'Job' wel bestaat
         if 'Job' not in df.columns:
-            st.error("❌ Fout: De kolom 'Job' is niet gevonden in dit bestand. Controleer de kolomnamen.")
+            st.error("❌ De kolom 'Job' is niet gevonden. Controleer of het bestand een CSV is.")
         else:
-            # --- DE MAGISCHE PARSER ---
+            # --- SCHOONMAAK: Komma's naar punten voor getallen ---
+            # We doen dit voor Length en Rate kolommen
+            for col in ['Length', 'Rate (Server)', 'Rate (Machine)']:
+                if col in df.columns:
+                    df[col] = df[col].astype(str).str.replace(',', '.')
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+
+            # --- DE PARSER ---
             def parse_job(job):
-                job_str = str(job)
-                parts = job_str.split('_')
-                # Logica: Prefix is 1e deel, Project is 2e deel, Element is laatste deel
-                prefix = parts[0] if len(parts) > 0 else "Overig"
-                project = parts[1] if len(parts) > 1 else "Onbekend"
-                element = parts[-1] if len(parts) > 1 else "Onbekend"
-                return pd.Series([prefix, project, element])
+                parts = str(job).split('_')
+                return pd.Series({
+                    'Type': parts[0],
+                    'Project': parts[1] if len(parts) > 1 else "Overig",
+                    'Element': parts[-1] if len(parts) > 1 else "Onbekend"
+                })
 
             df[['Type', 'Project', 'Element']] = df['Job'].apply(parse_job)
-            
-            # Zet Length om naar meters
-            if 'Length' in df.columns:
-                df['Meters'] = pd.to_numeric(df['Length'], errors='coerce') / 1000
-            else:
-                df['Meters'] = 0
+            df['Meters'] = df['Length'] / 1000
 
-            # --- KPI SECTIE ---
+            # --- KPI DASHBOARD ---
             tot_km = df['Meters'].sum() / 1000
-            avg_speed = df['Rate (Server)'].mean() if 'Rate (Server)' in df.columns else 0
+            avg_speed = df['Rate (Server)'].mean()
 
             m1, m2, m3 = st.columns(3)
             m1.metric("Totaal Volume", f"{tot_km:.2f} KM")
             m2.metric("Projecten", df['Project'].nunique())
-            m3.metric("Gem. Snelheid", f"{avg_speed:.1f} m/u")
+            m3.metric("Gem. Snelheid", f"{avg_speed:.2f} m/u")
 
             st.divider()
 
-            # --- VISUELE ANALYSE ---
-            col_l, col_r = st.columns([2, 1])
-
-            with col_l:
-                st.write("### 🏗️ Volume per Project")
-                proj_vol = df.groupby('Project')['Meters'].sum().reset_index().sort_values('Meters', ascending=False).head(15)
-                fig_proj = px.bar(proj_vol, x='Project', y='Meters', color='Meters', template="plotly_white")
+            # --- GRAFIEKEN ---
+            c1, c2 = st.columns(2)
+            
+            with c1:
+                st.write("### 📊 Meters per Project")
+                proj_vol = df.groupby('Project')['Meters'].sum().nlargest(10).reset_index()
+                fig_proj = px.bar(proj_vol, x='Project', y='Meters', color='Meters', color_continuous_scale='Blues')
                 st.plotly_chart(fig_proj, use_container_width=True)
 
-            with col_r:
-                st.write("### 📋 Verdeling per Type")
-                type_dist = df.groupby('Type').size().reset_index(name='Aantal')
-                fig_pie = px.pie(type_dist, values='Aantal', names='Type', hole=.4)
-                st.plotly_chart(fig_pie, use_container_width=True)
+            with c2:
+                st.write("### ⚙️ Unit Performance")
+                unit_perf = df.groupby('Unit')['Rate (Server)'].mean().reset_index()
+                fig_unit = px.bar(unit_perf, x='Unit', y='Rate (Server)', color='Rate (Server)', color_continuous_scale='Reds')
+                st.plotly_chart(fig_unit, use_container_width=True)
 
     except Exception as e:
-        st.error(f"Er ging iets mis bij het verwerken van het bestand: {e}")
+        st.error(f"⚠️ Er ging iets mis: {e}")
+        st.info("Tip: Controleer of het bestand niet geopend is in Excel tijdens het uploaden.")
 else:
-    st.info("👈 Upload het CSV-bestand in de zijbalk om de analyse te starten.")
+    st.info("👈 Upload het bestand in de zijbalk.")
