@@ -1,125 +1,106 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import numpy as np
+import plotly.graph_objects as go
 
 # --- CONFIG & STYLING ---
-st.set_page_config(page_title="Factory Flow Intelligence", layout="wide")
+st.set_page_config(page_title="Factory Intelligence Pro", layout="wide")
 st.markdown("""
     <style>
-    .main { background-color: #f4f7f9; }
-    .stMetric { border: 1px solid #dce1e6; padding: 20px; border-radius: 12px; background: white; box-shadow: 2px 2px 5px rgba(0,0,0,0.05); }
+    .main { background-color: #f0f2f6; }
+    .stMetric { border-radius: 15px; background: white; border: 1px solid #e0e0e0; }
+    .reportview-container .main .block-container { padding-top: 2rem; }
     </style>
     """, unsafe_allow_html=True)
 
-st.title("🏭 Factory Flow: Eindejaarsrapportage 2025")
+st.title("🏭 Factory Flow: Intelligence Dashboard")
 
-# --- SIDEBAR ---
-st.sidebar.header("📥 Data Input")
-uploaded_file = st.sidebar.file_uploader("Upload 'Production History' CSV", type="csv")
+# --- DATA IMPORT ---
+uploaded_file = st.sidebar.file_uploader("📂 Upload CSV Bestand", type="csv")
 
 if uploaded_file:
     try:
-        # Laden: we proberen de delimiter te herkennen
+        # Laden & Schoonmaken
         df = pd.read_csv(uploaded_file, sep=None, engine='python', on_bad_lines='skip')
-
-        # --- DE GROTE SCHOONMAAK (De 'Anti-298000' filter) ---
-        def clean_numeric(value):
-            if pd.isna(value): return 0
-            s = str(value).strip()
-            # Als er zowel een punt als een komma is (bijv. 1.234,56), verwijder de punt
-            if '.' in s and ',' in s:
-                s = s.replace('.', '')
-            # Vervang de komma door een punt voor de computer
-            s = s.replace(',', '.')
-            try:
-                return float(s)
-            except:
-                return 0
+        
+        def clean_num(v):
+            if pd.isna(v): return 0
+            s = str(v).replace('.', '').replace(',', '.')
+            try: return float(s)
+            except: return 0
 
         for col in ['Rate (Server)', 'Length']:
             if col in df.columns:
-                df[col] = df[col].apply(clean_numeric)
+                df[col] = df[col].apply(clean_num)
 
-        # Filter onmogelijke uitschieters (bijv. alles boven de 150 m/u is vaak meetfout)
-        df = df[df['Rate (Server)'] < 150]
-        # Filter elementen zonder lengte
-        df = df[df['Length'] > 0]
-
-        # --- PARSING ---
+        # Parser
         def parse_job(job):
-            parts = str(job).split('_')
-            return pd.Series({
-                'Type': parts[0],
-                'Project': parts[1] if len(parts) > 1 else "Overig",
-                'ElementID': parts[-1] if len(parts) > 1 else "Onbekend"
-            })
+            p = str(job).split('_')
+            return pd.Series({'Type': p[0], 'Project': p[1] if len(p)>1 else "Overig", 'ElementID': p[-1]})
 
         df[['Type', 'Project', 'ElementID']] = df['Job'].apply(parse_job)
         df['Meters'] = df['Length'] / 1000
-
-        # --- DASHBOARD TABS ---
-        tab1, tab2, tab3 = st.tabs(["📊 Management Summary", "🚀 Project Efficiency", "🛤️ Productie Routes"])
+        df['Start (Server)'] = pd.to_datetime(df['Start (Server)'], errors='coerce')
+        df['Finish (Server)'] = pd.to_datetime(df['Finish (Server)'], errors='coerce')
+        
+        # --- TABS ---
+        tab1, tab2 = st.tabs(["📊 Jaar Analyse", "🛤️ Route & Proces Inzicht"])
 
         with tab1:
-            st.subheader("Kerncijfers over 2025")
-            c1, c2, c3, c4 = st.columns(4)
+            st.subheader("Jaarresultaten 2025")
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Totaal Volume", f"{df['Meters'].sum()/1000:.2f} KM")
+            c2.metric("Projecten", df['Project'].nunique())
+            c3.metric("Gem. Snelheid", f"{df[df['Rate (Server)'] < 150]['Rate (Server)'].mean():.2f} m/u")
             
-            # KPI Berekeningen
-            total_km = df['Meters'].sum() / 1000
-            avg_speed = df['Rate (Server)'].replace(0, np.nan).mean() # Negeer 0-metingen
-            total_elements = len(df)
-            active_projects = df['Project'].nunique()
-
-            c1.metric("Totaal Volume", f"{total_km:.2f} KM", "geproduceerd")
-            c2.metric("Projecten", active_projects, "unieke nummers")
-            c3.metric("Gem. Snelheid", f"{avg_speed:.2f} m/u", "netto server rate")
-            c4.metric("Elementen", total_elements, "stuks")
-
-            st.divider()
-            
-            # Maandelijkse trend
-            df['Start (Server)'] = pd.to_datetime(df['Start (Server)'], errors='coerce')
-            monthly_trend = df.resample('M', on='Start (Server)')['Meters'].sum().reset_index()
-            monthly_trend['Maand'] = monthly_trend['Start (Server)'].dt.strftime('%B')
-            
-            st.write("### Productievolume per Maand (Meters)")
-            fig_trend = px.area(monthly_trend, x='Maand', y='Meters', color_discrete_sequence=['#1f77b4'])
-            st.plotly_chart(fig_trend, use_container_width=True)
+            st.plotly_chart(px.histogram(df, x='Project', y='Meters', color='Type', title="Volume per Project per Type"), use_container_width=True)
 
         with tab2:
-            st.subheader("Project Ranking: Snelheid vs. Volume")
+            st.subheader("Route-analyse per Project")
             
-            proj_data = df.groupby('Project').agg({
-                'Rate (Server)': 'mean',
-                'Meters': 'sum',
-                'ElementID': 'count'
-            }).reset_index()
+            # UX: Filter bovenaan
+            sel_proj = st.selectbox("🔍 Kies een Project voor diepte-analyse:", sorted(df['Project'].unique()))
+            p_df = df[df['Project'] == sel_proj].sort_values('Start (Server)')
 
-            # Filter kleine projecten voor de grafiek
-            proj_data = proj_data[proj_data['Meters'] > 10].sort_values('Rate (Server)', ascending=False)
+            # Project-specifieke metrics
+            k1, k2, k3 = st.columns(3)
+            k1.info(f"**Aantal Elementen:** {p_df['ElementID'].nunique()}")
+            k2.success(f"**Totaal Meters:** {p_df['Meters'].sum():.1f} m")
+            k3.warning(f"**Langzaamste Unit:** {p_df.groupby('Unit')['Rate (Server)'].mean().idxmin()}")
 
-            fig_speed = px.scatter(proj_data, x='Meters', y='Rate (Server)', size='ElementID', 
-                                   color='Rate (Server)', hover_name='Project',
-                                   title="Snelheid per Project (Groter bolletje = meer elementen)",
-                                   color_continuous_scale='RdYlGn')
-            st.plotly_chart(fig_speed, use_container_width=True)
-            
-            st.write("### Top 10 Snelste Projecten")
-            st.table(proj_data[['Project', 'Rate (Server)', 'Meters']].head(10))
+            st.divider()
 
-        with tab3:
-            st.subheader("Spoor een element op (Track & Trace)")
-            sel_project = st.selectbox("Selecteer een Project om de routes te zien:", sorted(df['Project'].unique()))
+            # VISUALISATIE 1: De Flow (Sankey-achtig)
+            st.write("### Flow over de Werkstations")
+            flow = p_df.groupby('Unit').agg({'ElementID': 'count', 'Meters': 'sum'}).reset_index()
+            fig_flow = px.funnel(flow.sort_values('Meters', ascending=False), y='Unit', x='Meters', 
+                                 title="Volume per Unit (Waar gaat de meeste massa heen?)",
+                                 color_discrete_sequence=['#636EFA'])
+            st.plotly_chart(fig_flow, use_container_width=True)
+
+            # VISUALISATIE 2: Route per Element (Tijdlijn)
+            st.write("### De 'Reis' van de Elementen")
+            # UX: Mogelijkheid om op specifiek element te filteren
+            all_elements = ["Alles"] + sorted(p_df['ElementID'].unique().tolist())
+            sel_elem = st.selectbox("Focus op specifiek element (optioneel):", all_elements)
             
-            subset = df[df['Project'] == sel_project].sort_values('Start (Server)')
+            plot_df = p_df if sel_elem == "Alles" else p_df[p_df['ElementID'] == sel_elem]
             
-            fig_route = px.timeline(subset, x_start="Start (Server)", x_end="Finish (Server)", 
-                                    y="ElementID", color="Unit", title=f"Route van elementen binnen {sel_project}")
-            fig_route.update_yaxes(autorange="reversed") 
+            fig_route = px.timeline(plot_df, x_start="Start (Server)", x_end="Finish (Server)", 
+                                    y="Unit", color="Unit", text="ElementID",
+                                    title=f"Tijdslijn per Unit voor {sel_proj}")
+            fig_route.update_yaxes(categoryorder="total ascending")
             st.plotly_chart(fig_route, use_container_width=True)
 
+            # UX: De Bottleneck tabel
+            st.write("### Efficiency per Unit voor dit project")
+            unit_table = p_df.groupby('Unit').agg({
+                'Rate (Server)': 'mean',
+                'Meters': 'sum'
+            }).rename(columns={'Rate (Server)': 'Gem. Snelheid (m/u)', 'Meters': 'Totaal Meters'}).reset_index()
+            st.dataframe(unit_table.style.highlight_min(subset=['Gem. Snelheid (m/u)'], color='#ffcccc'))
+
     except Exception as e:
-        st.error(f"Er ging iets mis in de machinekamer: {e}")
+        st.error(f"Fout bij verwerken: {e}")
 else:
-    st.info("👋 Welkom! Sleep je CSV-bestand in de zijbalk om de jaarcijfers te genereren.")
+    st.info("👋 Upload de CSV om de routes te visualiseren.")
